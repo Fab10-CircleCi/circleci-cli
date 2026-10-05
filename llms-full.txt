@@ -3909,22 +3909,22 @@ Generate configuration for a self-hosted runner
 
 Generate the configuration a self-hosted runner needs to start. --product
 machine (the default) emits an agent circleci-runner-config.yaml for machine
-runner 3 (circleci-runner 3.x); container and provisioner emit Helm values.
+runner 3 (circleci-runner 3.x); container and machineOrchestrator emit Helm values.
 
-| Flag                         | Description                                                                           |
-| ---------------------------- | ------------------------------------------------------------------------------------- |
-| `--name string`              | Runner name, machine only (default: hostname)                                         |
-| `--nickname string`          | Nickname for the new token                                                            |
-| `-o, --output string`        | Write config to this file instead of stdout                                           |
-| `--product string`           | Runner product: machine\|container\|provisioner (default machine, prompts when unset) |
-| `--token string`             | Use an existing token value instead of creating a new one                             |
-| `--working-directory string` | Job working directory, machine only                                                   |
+| Flag                         | Description                                                                                   |
+| ---------------------------- | --------------------------------------------------------------------------------------------- |
+| `--name string`              | Runner name, machine only (default: hostname)                                                 |
+| `--nickname string`          | Nickname for the new token                                                                    |
+| `-o, --output string`        | Write config to this file instead of stdout                                                   |
+| `--product string`           | Runner product: machine\|container\|machineOrchestrator (default machine, prompts when unset) |
+| `--token string`             | Use an existing token value instead of creating a new one                                     |
+| `--working-directory string` | Job working directory, machine only                                                           |
 
 
 **Arguments:**
 
 `<resource-class>` is the runner resource class to generate config for,
-in the form `namespace/name` (for example, `my-org/my-runner`).
+in the form `namespace/name` (for example, `my-org/my-runner`) or as its ID.
 
 **Examples:**
 
@@ -3949,12 +3949,11 @@ Instances are live runner agents currently connected to CircleCI.
 
 List connected runner instances
 
-List CircleCI runner instances currently connected to your organization.
+STATUS is derived from last_connected_at (online under 2 minutes, idle
+under 30, offline beyond). BUSY says whether the instance holds a task.
+Hostname, IP and last-used time are not reported by the agents API.
 
-STATUS is derived from last_connected: online within the last 2 minutes,
-idle 2–30 minutes ago, offline beyond that.
-
-JSON fields: resource_class, hostname, name, version, ip, status, first_connected, last_connected, last_used
+JSON fields: id, resource_class, resource_class_id, name, version, status, is_busy, first_connected_at, last_connected_at
 
 | Flag                      | Description                                                                       |
 | ------------------------- | --------------------------------------------------------------------------------- |
@@ -3962,7 +3961,7 @@ JSON fields: resource_class, hostname, name, version, ip, status, first_connecte
 | `--json`                  | Output as JSON                                                                    |
 | `--namespace string`      | Filter by namespace (organization)                                                |
 | `--org string`            | Organization slug (e.g. gh/myorg) or UUID; defaults to git remote                 |
-| `--resource-class string` | Filter by resource class (namespace/name)                                         |
+| `--resource-class string` | Filter by resource class (namespace/name or ID)                                   |
 
 
 **Aliases:**
@@ -3978,8 +3977,10 @@ JSON fields: resource_class, hostname, name, version, ip, status, first_connecte
   `circleci runner instance list --org gh/my-org`
 - List instances for a specific resource class: 
   `circleci runner instance list --resource-class my-org/my-runner`
-- Output as JSON: 
-  `circleci runner instance list --org gh/my-org --json`
+- List instances for a resource class given by its ID: 
+  `circleci runner instance list --resource-class 01234567-89ab-4cde-8f01-23456789abcd`
+- Extract just the names: 
+  `circleci runner instance list --json --jq '.[].name'`
 
 #### `circleci runner open [flags]`
 
@@ -4018,9 +4019,8 @@ Each resource class belongs to a namespace (usually your organization).
 
 Create a runner resource class
 
-Create a new CircleCI runner resource class.
-
-JSON fields: id, resource_class, description (token_id, token with --generate-token)
+Create a new CircleCI runner resource class. JSON fields: id, resource_class,
+description (token_id, token with --generate-token)
 
 | Flag                   | Description                                                                       |
 | ---------------------- | --------------------------------------------------------------------------------- |
@@ -4028,6 +4028,7 @@ JSON fields: id, resource_class, description (token_id, token with --generate-to
 | `--generate-token`     | also create a token for the resource class, nicknamed "default"                   |
 | `--jq string`          | Process values from the response using jq syntax (see `circleci help formatting`) |
 | `--json`               | Output as JSON                                                                    |
+| `--org string`         | Organization slug (e.g. gh/myorg) or UUID; defaults to git remote                 |
 
 
 **Arguments:**
@@ -4037,8 +4038,10 @@ where namespace is your organization name (for example, `my-org/my-runner`).
 
 **Examples:**
 
-- Create a resource class: 
+- Create a resource class in the org inferred from the git remote: 
   `circleci runner resource-class create my-org/my-runner`
+- Create in a specific organization: 
+  `circleci runner resource-class create my-org/my-runner --org gh/my-org`
 - Create with a description: 
   `circleci runner resource-class create my-org/my-runner --description "Linux amd64 runner"`
 - Create a resource class and generate a token nicknamed "default": 
@@ -4046,7 +4049,7 @@ where namespace is your organization name (for example, `my-org/my-runner`).
 - Output as JSON: 
   `circleci runner resource-class create my-org/my-runner --json`
 
-##### `circleci runner resource-class delete <namespace>/<name> [flags]`
+##### `circleci runner resource-class delete <resource-class> [flags]`
 
 Delete a runner resource class
 
@@ -4066,8 +4069,8 @@ JSON fields: id, resource_class
 
 **Arguments:**
 
-The resource class to delete, given in the form `namespace/name`,
-where namespace is your organization name (for example, `my-org/my-runner`).
+The resource class to delete, as `namespace/name` where namespace is your
+organization name (for example, `my-org/my-runner`), or as its ID.
 
 **Aliases:**
 
@@ -4080,23 +4083,24 @@ where namespace is your organization name (for example, `my-org/my-runner`).
   `circleci runner resource-class delete my-org/my-runner`
 - Delete without confirmation: 
   `circleci runner resource-class delete my-org/my-runner --force`
-- Delete in a script, and report what was deleted: 
-  `circleci runner resource-class delete my-org/my-runner --force --json`
+- Delete by ID in a script, and report what was deleted: 
+  `circleci runner resource-class delete 01234567-89ab-4cde-8f01-23456789abcd --force --json`
 
 ##### `circleci runner resource-class list [flags]`
 
 List runner resource classes
 
-List CircleCI runner resource classes.
+List CircleCI runner resource classes in an organization, a namespace, or by name.
 
 JSON fields: id, resource_class, description
 
-| Flag                 | Description                                                                       |
-| -------------------- | --------------------------------------------------------------------------------- |
-| `--jq string`        | Process values from the response using jq syntax (see `circleci help formatting`) |
-| `--json`             | Output as JSON                                                                    |
-| `--namespace string` | Filter by namespace (organization)                                                |
-| `--org string`       | Organization slug (e.g. gh/myorg) or UUID; defaults to git remote                 |
+| Flag                      | Description                                                                       |
+| ------------------------- | --------------------------------------------------------------------------------- |
+| `--jq string`             | Process values from the response using jq syntax (see `circleci help formatting`) |
+| `--json`                  | Output as JSON                                                                    |
+| `--namespace string`      | Filter by namespace (organization)                                                |
+| `--org string`            | Organization slug (e.g. gh/myorg) or UUID; defaults to git remote                 |
+| `--resource-class string` | Filter by resource class (namespace/name or ID)                                   |
 
 
 **Aliases:**
@@ -4112,8 +4116,44 @@ JSON fields: id, resource_class, description
   `circleci runner resource-class list --org gh/my-org`
 - List resource classes for a specific organization (UUID): 
   `circleci runner resource-class list --org f22b6566-597d-46d5-ba74-99ef5bb3d85c`
+- List the resource classes in one namespace: 
+  `circleci runner resource-class list --namespace my-org`
 - Output as JSON: 
   `circleci runner resource-class list --org gh/my-org --json`
+
+##### `circleci runner resource-class update <resource-class> [flags]`
+
+Update a runner resource class
+
+Update a CircleCI runner resource class.
+
+Only the description can be changed. The resource class name and ID
+cannot be modified after creation.
+
+JSON fields: id, resource_class, description
+
+| Flag                   | Description                                                                       |
+| ---------------------- | --------------------------------------------------------------------------------- |
+| `--description string` | New description for the resource class (use "" to clear)                          |
+| `--jq string`          | Process values from the response using jq syntax (see `circleci help formatting`) |
+| `--json`               | Output as JSON                                                                    |
+
+
+**Arguments:**
+
+The resource class to update, as `namespace/name` where namespace is your
+organization name (for example, `my-org/my-runner`), or as its ID.
+
+**Examples:**
+
+- Update the description of a resource class: 
+  `circleci runner resource-class update my-org/my-runner --description "Linux amd64 runner"`
+- Clear the description: 
+  `circleci runner resource-class update my-org/my-runner --description ""`
+- Update a resource class by its ID: 
+  `circleci runner resource-class update 01234567-89ab-4cde-8f01-23456789abcd --description "ARM runner"`
+- Update and output the result as JSON: 
+  `circleci runner resource-class update my-org/my-runner --description "ARM runner" --json`
 
 #### `circleci runner token <command>`
 
@@ -4132,9 +4172,8 @@ Create a token for a resource class
 
 Create a new authentication token for a runner resource class.
 
-The token value is shown only once at creation time. Store it securely —
-it cannot be retrieved afterwards. If lost, delete this token and create
-a new one.
+The token value is shown only once and cannot be retrieved afterwards.
+Store it securely. If lost, delete this token and create a new one.
 
 JSON fields: id, resource_class, nickname, created_at, token
 
@@ -4148,7 +4187,7 @@ JSON fields: id, resource_class, nickname, created_at, token
 **Arguments:**
 
 `<resource-class>` is the runner resource class to create a token for,
-in the form `namespace/name` (for example, `my-org/my-runner`).
+in the form `namespace/name` (for example, `my-org/my-runner`) or as its ID.
 
 **Examples:**
 
@@ -4156,6 +4195,8 @@ in the form `namespace/name` (for example, `my-org/my-runner`).
   `circleci runner token create my-org/my-runner`
 - Create a token with a nickname: 
   `circleci runner token create my-org/my-runner --nickname "prod-server-1"`
+- Create a token for a resource class given by its ID: 
+  `circleci runner token create 01234567-89ab-4cde-8f01-23456789abcd`
 - Output as JSON (includes the token value): 
   `circleci runner token create my-org/my-runner --json`
 
@@ -4212,7 +4253,7 @@ JSON fields: id, resource_class, nickname, created_at
 | `--jq string`             | Process values from the response using jq syntax (see `circleci help formatting`) |
 | `--json`                  | Output as JSON                                                                    |
 | `--org string`            | Organization slug (e.g. gh/myorg) or UUID; defaults to git remote                 |
-| `--resource-class string` | Filter by resource class (namespace/name)                                         |
+| `--resource-class string` | Filter by resource class (namespace/name or ID)                                   |
 
 
 **Aliases:**
@@ -5009,10 +5050,17 @@ CLI command.
 ### `circleci testsuite <command> [flags]`
 
 Reduce test execution time while maintaining test confidence by running CircleCI's testsuite tooling.
-The testsuite provides three independent features:
+
+Available for free:
+- Static test splitting - split tests evenly across parallel execution nodes using previous run timings.
+- Manual rerun of failed tests - Rerun workflow from the CircleCI UI, API or CLI reruns only the tests that failed.
+
+Available as opt-in paid features:
 - Test impact analysis - run only the tests impacted by your code changes.
-- Dynamic test splitting - evenly distribute tests across parallel execution nodes.
-- Auto rerun failed tests - automatically retry failed tests.
+- Dynamic test splitting - distribute tests across parallel execution nodes as they run, reducing node idle time.
+- Auto rerun failed tests - automatically rerun failed tests during your test run.
+
+Each feature is independently enabled, configure them per suite in .circleci/test-suites.yml.
 
 | Flag        | Description                                                                                 |
 | ----------- | ------------------------------------------------------------------------------------------- |
@@ -5073,6 +5121,20 @@ Run diagnostics to check your test suite setup
 | `--sort name\|impact` | Order by name, or by impact: most connected first (default name) |
 | `--version N`         | Fetch a specific version of impact data instead of the latest    |
 
+
+#### `circleci testsuite result <job-id> [flags]`
+
+(experimental) Show how a job's test atoms were selected and how they ran
+
+| Flag                | Description                               |
+| ------------------- | ----------------------------------------- |
+| `--test ATOM`       | Print the test results for this test atom |
+| `--sort name\|time` | Order by name or time (default name)      |
+
+
+**Arguments:**
+
+`<job-id>` Browse the test results for this job
 
 ## Additional Commands
 
